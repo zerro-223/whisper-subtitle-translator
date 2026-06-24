@@ -1,0 +1,17 @@
+{
+  "whisper_model": "large-v3",
+  "language": "zh",
+  "translator": "google",
+  "translate_to": "en",
+  "bilingual": false,
+  "output_dir": "",
+  "llm_api_key": "",
+  "llm_base_url": "https://api.openai.com/v1",
+  "llm_model": "gpt-4o-mini",
+  "deepl_api_key": "",
+  "baidu_app_id": "",
+  "baidu_secret_key": "",
+  "youdao_app_key": "",
+  "youdao_app_secret": "",
+  "device": "auto"
+}

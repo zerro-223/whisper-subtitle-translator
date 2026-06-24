@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+
+# Model files (~3GB)
+whisper/
+
+# User data
+input/
+output/
+debug.log
+
+# Credentials
+config.json
+translate_config.json
+
+# Claude
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
