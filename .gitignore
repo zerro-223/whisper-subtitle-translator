@@ -8,6 +8,8 @@ whisper/
 # User data
 input/
 output/
+MP3/
+hf_cache/
 debug.log
 
 # Credentials

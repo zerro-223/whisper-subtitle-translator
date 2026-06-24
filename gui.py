@@ -148,7 +148,7 @@ class DropListbox(tk.Listbox):
             import tkinterdnd2
             self.drop_target_register(tkinterdnd2.DND_FILES)
             self.dnd_bind("<<Drop>>", self._on_drop)
-        except ImportError:
+        except (ImportError, tk.TclError):
             pass
 
     def _on_drop(self, event):
