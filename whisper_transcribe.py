@@ -51,6 +51,7 @@ def translate_srt(
     from_lang: str,
     to_lang: str,
     progress_callback=None,
+    stop_event=None,
     **translator_kwargs,
 ) -> str:
     """
@@ -61,7 +62,8 @@ def translate_srt(
         translator_type: 翻译器类型 (deepl/baidu/youdao/google/llm)
         from_lang: 源语言代码
         to_lang: 目标语言代码
-        progress_callback: 可选进度回调 fn(translated_count, total, text, result)
+        progress_callback: 可选进度回调 fn(count, total, text, result)
+        stop_event: 可选 threading.Event，设置后中断逐句翻译
         **translator_kwargs: 翻译器参数
 
     Returns:
@@ -74,34 +76,48 @@ def translate_srt(
     print(f"使用 {translator.get_name()} 翻译: {from_lang} -> {to_lang}")
 
     lines = srt_content.strip().split("\n")
-    translated_lines = []
-    total = 0
 
-    # 统计字幕条数
-    for line in lines:
-        if line.strip().isdigit():
-            total += 1
-
-    current = 0
-    for line in lines:
+    # 收集所有需要翻译的文本和位置
+    text_positions = []  # (line_index, text)
+    for idx, line in enumerate(lines):
         stripped = line.strip()
-        # 跳过空行、序号、时间戳
-        if not stripped or stripped.isdigit() or "-->" in stripped:
-            translated_lines.append(line)
-        else:
-            current += 1
-            try:
-                translated = translator.translate(stripped, from_code, to_code)
-                translated_lines.append(translated)
-                if progress_callback:
-                    progress_callback(current, total, stripped, translated)
-                else:
-                    print(f"  [{current}/{total}] {stripped[:30]}... -> {translated[:30]}...")
-            except Exception as e:
-                print(f"  [{current}/{total}] 翻译失败: {e}，保留原文")
-                translated_lines.append(stripped)
-            # 避免请求过快
-            time.sleep(0.1)
+        if stripped and not stripped.isdigit() and "-->" not in stripped:
+            text_positions.append((idx, stripped))
+
+    total = len(text_positions)
+    if total == 0:
+        return srt_content
+
+    # 批量翻译模式（LLM）
+    if hasattr(translator, 'translate_batch'):
+        texts = [t for _, t in text_positions]
+        batch_results = translator.translate_batch(texts, from_code, to_code)
+
+        translated_lines = list(lines)
+        for i, ((idx, original), result) in enumerate(zip(text_positions, batch_results), 1):
+            translated_lines[idx] = result
+            if progress_callback:
+                progress_callback(i, total, original, result)
+            else:
+                print(f"  [{i}/{total}] {original[:30]}... -> {result[:30]}...")
+        return "\n".join(translated_lines)
+
+    # 逐句翻译模式
+    translated_lines = list(lines)
+    for i, (idx, text) in enumerate(text_positions, 1):
+        if stop_event and stop_event.is_set():
+            print("  翻译已被用户中断")
+            break
+        try:
+            translated = translator.translate(text, from_code, to_code)
+            translated_lines[idx] = translated
+            if progress_callback:
+                progress_callback(i, total, text, translated)
+            else:
+                print(f"  [{i}/{total}] {text[:30]}... -> {translated[:30]}...")
+        except Exception as e:
+            print(f"  [{i}/{total}] 翻译失败: {e}，保留原文")
+        time.sleep(0.1)
 
     return "\n".join(translated_lines)
 

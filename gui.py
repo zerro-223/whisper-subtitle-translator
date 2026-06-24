@@ -31,6 +31,28 @@ AUDIO_FORMATS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma"}
 VIDEO_FORMATS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v"}
 SUPPORTED_FORMATS = AUDIO_FORMATS | VIDEO_FORMATS
 
+# 模型信息（显存需求 + 精度参考）
+MODEL_INFO = {
+    "tiny":     "约 1GB 显存 | 精度：一般",
+    "base":     "约 1GB 显存 | 精度：一般",
+    "small":    "约 2GB 显存 | 精度：较好",
+    "medium":   "约 5GB 显存 | 精度：良好",
+    "large-v3": "约 10GB 显存 | 精度：最佳",
+}
+
+# 语言显示名称 → 语言代码
+LANG_DISPLAY = {
+    "自动检测": "auto",
+    "中文": "zh",
+    "英文": "en",
+    "日语": "ja",
+    "韩语": "ko",
+    "法语": "fr",
+    "德语": "de",
+    "西班牙语": "es",
+}
+LANG_CODE = {v: k for k, v in LANG_DISPLAY.items()}  # 代码 → 显示名称
+
 # 常见 LLM 厂商配置
 LLM_PROVIDERS = {
     "OpenAI": {
@@ -166,7 +188,8 @@ class WhisperGUI:
     def __init__(self):
         self.config = Config()
         self.is_processing = False
-        self.stop_flag = False
+        self.stop_event = threading.Event()
+        self.model = None
 
         self.root = tk.Tk()
         self.root.title("Whisper 字幕识别 + 翻译")
@@ -242,16 +265,25 @@ class WhisperGUI:
         self.model_var = tk.StringVar()
         model_combo = ttk.Combobox(
             row1, textvariable=self.model_var,
-            values=["tiny", "base", "small", "medium", "large-v3"],
+            values=list(MODEL_INFO.keys()),
             state="readonly", width=12,
         )
-        model_combo.pack(side=tk.LEFT, padx=(0, 15))
+        model_combo.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.model_info_label = ttk.Label(row1, text="", font=("", 8), foreground="gray")
+        self.model_info_label.pack(side=tk.LEFT, padx=(0, 15))
+
+        def on_model_change(*args):
+            info = MODEL_INFO.get(self.model_var.get(), "")
+            self.model_info_label.config(text=info)
+
+        self.model_var.trace_add("write", on_model_change)
 
         ttk.Label(row1, text="识别语言:").pack(side=tk.LEFT, padx=(0, 5))
         self.lang_var = tk.StringVar()
         lang_combo = ttk.Combobox(
             row1, textvariable=self.lang_var,
-            values=["zh", "en", "ja", "ko", "fr", "de", "es", "auto"],
+            values=list(LANG_DISPLAY.keys()),
             state="readonly", width=8,
         )
         lang_combo.pack(side=tk.LEFT, padx=(0, 15))
@@ -285,7 +317,7 @@ class WhisperGUI:
         self.target_lang_var = tk.StringVar()
         target_combo = ttk.Combobox(
             row2, textvariable=self.target_lang_var,
-            values=["zh", "en", "ja", "ko", "fr", "de", "es"],
+            values=[v for k, v in LANG_DISPLAY.items() if k != "自动检测"],
             state="readonly", width=8,
         )
         target_combo.pack(side=tk.LEFT, padx=(0, 15))
@@ -317,6 +349,12 @@ class WhisperGUI:
 
         ttk.Button(ctrl_frame, text="API 配置", command=self._open_api_config).pack(side=tk.LEFT, padx=(0, 10))
 
+        self.unload_btn = ttk.Button(
+            ctrl_frame, text="卸载模型", command=self._unload_model,
+            state=tk.DISABLED,
+        )
+        self.unload_btn.pack(side=tk.LEFT, padx=(0, 10))
+
         self.status_label = ttk.Label(ctrl_frame, text="就绪", style="Status.TLabel")
         self.status_label.pack(side=tk.RIGHT)
 
@@ -342,19 +380,19 @@ class WhisperGUI:
 
     def _load_config(self):
         self.model_var.set(self.config.get("whisper_model", "large-v3"))
-        self.lang_var.set(self.config.get("language", "zh"))
+        self.lang_var.set(LANG_CODE.get(self.config.get("language", "zh"), "中文"))
         self.device_var.set(self.config.get("device", "auto"))
         self.translator_var.set(self.config.get("translator", "google"))
-        self.target_lang_var.set(self.config.get("translate_to", "en"))
+        self.target_lang_var.set(LANG_CODE.get(self.config.get("translate_to", "en"), "英文"))
         self.bilingual_var.set(self.config.get("bilingual", False))
         self.output_dir_var.set(self.config.get("output_dir", ""))
 
     def _save_config(self):
         self.config.set("whisper_model", self.model_var.get())
-        self.config.set("language", self.lang_var.get())
+        self.config.set("language", LANG_DISPLAY.get(self.lang_var.get(), "zh"))
         self.config.set("device", self.device_var.get())
         self.config.set("translator", self.translator_var.get())
-        self.config.set("translate_to", self.target_lang_var.get())
+        self.config.set("translate_to", LANG_DISPLAY.get(self.target_lang_var.get(), "en"))
         self.config.set("bilingual", self.bilingual_var.get())
         self.config.set("output_dir", self.output_dir_var.get())
         self.config.save()
@@ -640,7 +678,7 @@ class WhisperGUI:
 
         self._save_config()
         self.is_processing = True
-        self.stop_flag = False
+        self.stop_event.clear()
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
 
@@ -648,7 +686,7 @@ class WhisperGUI:
         thread.start()
 
     def _stop_processing(self):
-        self.stop_flag = True
+        self.stop_event.set()
         self._log("正在停止...")
 
     def _process_files(self, files):
@@ -669,12 +707,16 @@ class WhisperGUI:
             self.root.after(0, self._log, f"使用设备: {device}")
 
             model = whisper.load_model(model_name, device=device)
+            self.model = model
+            self.model_name = model_name
+            self.root.after(0, self.unload_btn.config, {"state": tk.NORMAL})
             self.root.after(0, self._log, "模型加载完成")
 
             # 翻译器
             enable_translate = self.enable_translate_var.get()
             translator_type = self.translator_var.get()
-            translate_to = self.target_lang_var.get() if enable_translate else None
+            translate_to_raw = self.target_lang_var.get() if enable_translate else None
+            translate_to = LANG_DISPLAY.get(translate_to_raw, translate_to_raw) if translate_to_raw else None
             translator = None
 
             if enable_translate and translate_to:
@@ -706,7 +748,7 @@ class WhisperGUI:
             # 处理文件
             total_files = len(files)
             for i, file_path in enumerate(files):
-                if self.stop_flag:
+                if self.stop_event.is_set():
                     self.root.after(0, self._log, "处理已停止")
                     break
 
@@ -720,7 +762,7 @@ class WhisperGUI:
                     self.root.after(0, self.progress_label.config,
                         {"text": f"[{i+1}/{total_files}] 正在识别: {file_name}"})
 
-                    language = self.lang_var.get()
+                    language = LANG_DISPLAY.get(self.lang_var.get(), self.lang_var.get())
                     transcribe_options = {"verbose": False}
                     if language != "auto":
                         transcribe_options["language"] = language
@@ -729,6 +771,12 @@ class WhisperGUI:
                     detected_lang = result.get("language", "unknown")
                     segments = result["segments"]
                     seg_count = len(segments)
+
+                    # 识别完成后检查是否已按下停止
+                    if self.stop_event.is_set():
+                        self.root.after(0, self._log, "处理已停止")
+                        break
+
                     self.root.after(0, self._log, f"  识别语言: {detected_lang}, 共 {seg_count} 句")
 
                     # 生成 SRT
@@ -760,6 +808,7 @@ class WhisperGUI:
                             detected_lang,
                             translate_to,
                             progress_callback=progress_callback,
+                            stop_event=self.stop_event,
                             **translator_kwargs,
                         )
 
@@ -784,6 +833,21 @@ class WhisperGUI:
             self.root.after(0, self._log, f"错误: {e}")
         finally:
             self.root.after(0, self._processing_done)
+
+    def _unload_model(self):
+        if self.model is None:
+            messagebox.showinfo("提示", "模型尚未加载")
+            return
+        try:
+            import torch
+            model_name = self.model_name if hasattr(self, 'model_name') else "unknown"
+            del self.model
+            self.model = None
+            torch.cuda.empty_cache()
+            self.unload_btn.config(state=tk.DISABLED)
+            self._log(f"模型已从内存中卸载，显存已释放")
+        except Exception as e:
+            self._log(f"卸载模型失败: {e}")
 
     def _processing_done(self):
         self.is_processing = False

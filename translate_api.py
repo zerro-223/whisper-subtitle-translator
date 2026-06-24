@@ -6,6 +6,7 @@
 import hashlib
 import json
 import random
+import re
 import time
 import urllib.parse
 from abc import ABC, abstractmethod
@@ -212,6 +213,65 @@ class LLMTranslator(TranslatorBase):
         result = response.json()
 
         return result["choices"][0]["message"]["content"].strip()
+
+    def translate_batch(self, texts: list[str], from_lang: str, to_lang: str) -> list[str]:
+        """批量翻译 — 将所有句子合并为一次 API 请求，提高缓存命中率并节省 token"""
+        if not texts:
+            return []
+
+        lang_names = {
+            "zh": "中文", "en": "英文", "ja": "日语", "ko": "韩语",
+            "fr": "法语", "de": "德语", "es": "西班牙语", "it": "意大利语",
+            "pt": "葡萄牙语", "ru": "俄语",
+        }
+        from_name = lang_names.get(from_lang, from_lang)
+        to_name = lang_names.get(to_lang, to_lang)
+
+        # 将所有句子编号，一次发送
+        numbered_lines = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+        user_prompt = (
+            f"将以下{from_name}文本逐行翻译成{to_name}，"
+            f"保持编号格式（序号. 译文），不要添加任何解释或额外内容：\n\n{numbered_lines}"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+        }
+
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=120,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+
+        # 解析编号行
+        translations = []
+        for line in content.split("\n"):
+            line = line.strip()
+            match = re.match(r"^\d+[\.\)、]\s*(.+)", line)
+            if match:
+                translations.append(match.group(1))
+            elif line:
+                translations.append(line)
+
+        # 确保数量一致（解析失败时用原文填充）
+        while len(translations) < len(texts):
+            translations.append(texts[len(translations)])
+
+        return translations[:len(texts)]
 
 
 def create_translator(translator_type: str, **kwargs) -> TranslatorBase:
